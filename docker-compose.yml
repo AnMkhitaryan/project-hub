@@ -40,6 +40,9 @@ services:
     volumes:
       # Bind mount + --reload gives you live editing without rebuilds.
       - ./app:/code/app
+      # So `alembic revision --autogenerate` writes migration files back to
+      # the host instead of leaving them stranded in an ephemeral container.
+      - ./alembic:/code/alembic
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
