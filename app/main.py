@@ -2,8 +2,10 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.db import engine
+from app.routers import auth
 
 app = FastAPI(title="project-hub")
+app.include_router(auth.router)
 
 
 @app.get("/health")
