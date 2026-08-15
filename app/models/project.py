@@ -22,5 +22,9 @@ class Project(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    memberships: Mapped[list["ProjectMember"]] = relationship(back_populates="project")
-    documents: Mapped[list["Document"]] = relationship(back_populates="project")
+    memberships: Mapped[list["ProjectMember"]] = relationship(
+        back_populates="project", passive_deletes=True
+    )
+    documents: Mapped[list["Document"]] = relationship(
+        back_populates="project", passive_deletes=True
+    )
