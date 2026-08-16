@@ -64,6 +64,23 @@ async def download_stream(s3_key: str) -> AsyncIterator[bytes]:
         body.close()
 
 
+async def sum_object_sizes(prefix: str) -> int:
+    settings = get_settings()
+    client = _client()
+    total = 0
+    continuation_token = None
+    while True:
+        kwargs = {"Bucket": settings.s3_bucket, "Prefix": prefix}
+        if continuation_token is not None:
+            kwargs["ContinuationToken"] = continuation_token
+        response = await asyncio.to_thread(client.list_objects_v2, **kwargs)
+        total += sum(obj["Size"] for obj in response.get("Contents", []))
+        if not response.get("IsTruncated"):
+            break
+        continuation_token = response.get("NextContinuationToken")
+    return total
+
+
 async def delete(s3_key: str) -> None:
     await delete_many([s3_key])
 

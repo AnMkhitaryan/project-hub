@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 
 import boto3
 import pytest
@@ -11,6 +12,7 @@ from app.db import SessionLocal
 from app.db import engine as db_engine
 from app.main import app
 from app.models import Document, Project, ProjectMember, ProjectRole
+from app.services.security import create_invite_token
 
 
 def _s3_client():
@@ -313,3 +315,226 @@ async def test_delete_project_by_non_member_returns_404(client: AsyncClient):
         f"/project/{project_id}", headers={"Authorization": f"Bearer {outsider_token}"})
 
     assert response.status_code == 404
+
+
+async def _user_login(client: AsyncClient, token: str) -> str:
+    response = await client.get("/me", headers={"Authorization": f"Bearer {token}"})
+    return response.json()["login"]
+
+
+async def test_invite_by_owner_returns_201_with_participant_role(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_login = await _user_login(client, invitee_token)
+
+    response = await client.post(
+        f"/project/{project_id}/invite",
+        params={"user": invitee_login},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["project_id"] == project_id
+    assert body["role"] == "participant"
+
+
+async def test_invite_by_participant_returns_403(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    participant_token = await _register_and_login(client)
+    participant_id = await _user_id(client, participant_token)
+    await _add_membership(project_id, participant_id, ProjectRole.PARTICIPANT)
+    invitee_token = await _register_and_login(client)
+    invitee_login = await _user_login(client, invitee_token)
+
+    response = await client.post(
+        f"/project/{project_id}/invite",
+        params={"user": invitee_login},
+        headers={"Authorization": f"Bearer {participant_token}"},
+    )
+
+    assert response.status_code == 403
+
+
+async def test_invite_unknown_user_returns_404(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+
+    response = await client.post(
+        f"/project/{project_id}/invite",
+        params={"user": f"nobody_{uuid.uuid4().hex[:12]}"},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+
+    assert response.status_code == 404
+
+
+async def test_invite_already_member_returns_409(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_login = await _user_login(client, invitee_token)
+    await client.post(
+        f"/project/{project_id}/invite",
+        params={"user": invitee_login},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+
+    response = await client.post(
+        f"/project/{project_id}/invite",
+        params={"user": invitee_login},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+
+    assert response.status_code == 409
+
+
+async def test_invite_by_non_member_returns_404(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    outsider_token = await _register_and_login(client)
+    invitee_token = await _register_and_login(client)
+    invitee_login = await _user_login(client, invitee_token)
+
+    response = await client.post(
+        f"/project/{project_id}/invite",
+        params={"user": invitee_login},
+        headers={"Authorization": f"Bearer {outsider_token}"},
+    )
+
+    assert response.status_code == 404
+
+
+async def _user_email(client: AsyncClient, token: str) -> str:
+    response = await client.get("/me", headers={"Authorization": f"Bearer {token}"})
+    return response.json()["email"]
+
+
+async def test_share_and_join_grants_participant_access(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_email = await _user_email(client, invitee_token)
+
+    share_response = await client.get(
+        f"/project/{project_id}/share",
+        params={"with": invitee_email},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert share_response.status_code == 200
+    token = share_response.json()["token"]
+
+    join_response = await client.get(
+        "/join", params={"token": token}, headers={"Authorization": f"Bearer {invitee_token}"}
+    )
+
+    assert join_response.status_code == 201
+    body = join_response.json()
+    assert body["project_id"] == project_id
+    assert body["role"] == "participant"
+
+    access = await client.get(
+        f"/project/{project_id}/info", headers={"Authorization": f"Bearer {invitee_token}"}
+    )
+    assert access.status_code == 200
+
+
+async def test_share_by_participant_returns_403(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    participant_token = await _register_and_login(client)
+    participant_id = await _user_id(client, participant_token)
+    await _add_membership(project_id, participant_id, ProjectRole.PARTICIPANT)
+    invitee_token = await _register_and_login(client)
+    invitee_email = await _user_email(client, invitee_token)
+
+    response = await client.get(
+        f"/project/{project_id}/share",
+        params={"with": invitee_email},
+        headers={"Authorization": f"Bearer {participant_token}"},
+    )
+
+    assert response.status_code == 403
+
+
+async def test_join_with_tampered_token_returns_400(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_email = await _user_email(client, invitee_token)
+    share_response = await client.get(
+        f"/project/{project_id}/share",
+        params={"with": invitee_email},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    token = share_response.json()["token"]
+    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+
+    response = await client.get(
+        "/join", params={"token": tampered}, headers={"Authorization": f"Bearer {invitee_token}"}
+    )
+
+    assert response.status_code == 400
+
+
+async def test_join_with_expired_token_returns_400(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_email = await _user_email(client, invitee_token)
+
+    expired_token = create_invite_token(
+        project_id, invitee_email, expires_delta=timedelta(seconds=-1)
+    )
+
+    response = await client.get(
+        "/join",
+        params={"token": expired_token},
+        headers={"Authorization": f"Bearer {invitee_token}"},
+    )
+
+    assert response.status_code == 400
+
+
+async def test_join_with_wrong_recipient_email_returns_403(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_email = await _user_email(client, invitee_token)
+    other_token = await _register_and_login(client)
+    share_response = await client.get(
+        f"/project/{project_id}/share",
+        params={"with": invitee_email},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    token = share_response.json()["token"]
+
+    response = await client.get(
+        "/join", params={"token": token}, headers={"Authorization": f"Bearer {other_token}"}
+    )
+
+    assert response.status_code == 403
+
+
+async def test_join_already_member_returns_409(client: AsyncClient):
+    owner_token = await _register_and_login(client)
+    [project_id] = await _create_projects(client, owner_token, 1)
+    invitee_token = await _register_and_login(client)
+    invitee_email = await _user_email(client, invitee_token)
+    share_response = await client.get(
+        f"/project/{project_id}/share",
+        params={"with": invitee_email},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    token = share_response.json()["token"]
+    await client.get(
+        "/join", params={"token": token}, headers={"Authorization": f"Bearer {invitee_token}"}
+    )
+
+    response = await client.get(
+        "/join", params={"token": token}, headers={"Authorization": f"Bearer {invitee_token}"}
+    )
+
+    assert response.status_code == 409

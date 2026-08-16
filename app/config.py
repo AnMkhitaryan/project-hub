@@ -11,12 +11,16 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
+    invite_token_expire_minutes: int = 60 * 24
 
     s3_bucket: str = "project-documents"
     aws_region: str = "us-east-1"
     aws_endpoint_url: str | None = None
 
     max_project_bytes: int = 100 * 1024 * 1024
+
+    internal_api_secret: str = "change-me-internal"
+    api_base_url: str = "http://api:8000"
 
 
 @lru_cache

@@ -4,11 +4,12 @@ import boto3
 import pytest
 from botocore.exceptions import ClientError
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
 from app.main import app
-from app.models import Document
+from app.models import Document, Project
 
 
 def _s3_client():
@@ -313,6 +314,84 @@ async def test_delete_document_db_row_survives_failed_s3_delete(
 
     async with SessionLocal() as session:
         assert await session.get(Document, doc_id) is not None
+
+
+async def test_upload_updates_project_total_size_bytes(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+
+    await client.post(
+        f"/project/{project_id}/documents",
+        files=[
+            ("files", ("a.pdf", PDF_BYTES, "application/pdf")),
+            ("files", ("b.pdf", PDF_BYTES, "application/pdf")),
+        ],
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    async with SessionLocal() as session:
+        project = await session.get(Project, project_id)
+    assert project.total_size_bytes == 2 * len(PDF_BYTES)
+
+
+async def test_upload_rejects_when_exceeding_project_size_limit(
+    client: AsyncClient, monkeypatch):
+    monkeypatch.setattr(get_settings(), "max_project_bytes", len(PDF_BYTES) - 1)
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+
+    response = await client.post(
+        f"/project/{project_id}/documents",
+        files={"files": ("report.pdf", PDF_BYTES, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},)
+
+    assert response.status_code == 413
+    async with SessionLocal() as session:
+        project = await session.get(Project, project_id)
+        documents = await session.execute(
+            select(Document).where(Document.project_id == project_id))
+    assert project.total_size_bytes == 0
+    assert documents.scalars().all() == []
+
+
+async def test_delete_document_decrements_project_total_size_bytes(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    upload_response = await client.post(
+        f"/project/{project_id}/documents",
+        files={"files": ("report.pdf", PDF_BYTES, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},)
+    doc_id = upload_response.json()[0]["id"]
+
+    await client.delete(f"/document/{doc_id}", headers={"Authorization": f"Bearer {token}"})
+
+    async with SessionLocal() as session:
+        project = await session.get(Project, project_id)
+    assert project.total_size_bytes == 0
+
+
+async def test_replace_document_rejects_when_growth_exceeds_limit(
+    client: AsyncClient, monkeypatch):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+    upload_response = await client.post(
+        f"/project/{project_id}/documents",
+        files={"files": ("report.pdf", PDF_BYTES, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},)
+    doc_id = upload_response.json()[0]["id"]
+    monkeypatch.setattr(get_settings(), "max_project_bytes", len(PDF_BYTES))
+
+    response = await client.put(
+        f"/document/{doc_id}",
+        files={"file": ("report.pdf", PDF_BYTES_V2, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},)
+
+    assert response.status_code == 413
+    download = await client.get(f"/document/{doc_id}", headers={"Authorization": f"Bearer {token}"})
+    assert download.content == PDF_BYTES
+    async with SessionLocal() as session:
+        project = await session.get(Project, project_id)
+    assert project.total_size_bytes == len(PDF_BYTES)
 
 
 async def test_delete_document_requires_membership(client: AsyncClient):

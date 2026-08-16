@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -7,6 +8,27 @@ from sqlalchemy.orm import selectinload
 from app.models import Document, Project, ProjectMember, ProjectRole, User
 from app.schemas.project import ProjectCreate, ProjectUpdate
 from app.services import storage
+from app.services.security import InvalidInviteTokenError, decode_invite_token
+
+USER_NOT_FOUND_ERROR = HTTPException(
+    status_code=status.HTTP_404_NOT_FOUND,
+    detail="user not found",
+)
+
+ALREADY_MEMBER_ERROR = HTTPException(
+    status_code=status.HTTP_409_CONFLICT,
+    detail="user is already a member of this project",
+)
+
+INVALID_INVITE_ERROR = HTTPException(
+    status_code=status.HTTP_400_BAD_REQUEST,
+    detail="invalid or expired invite link",
+)
+
+WRONG_RECIPIENT_ERROR = HTTPException(
+    status_code=status.HTTP_403_FORBIDDEN,
+    detail="this invite is for a different email address",
+)
 
 
 async def create_project(session: AsyncSession, data: ProjectCreate, owner: User) -> Project:
@@ -53,3 +75,53 @@ async def update_project(session: AsyncSession, project: Project, data: ProjectU
     await session.commit()
     await session.refresh(project)
     return project
+
+
+async def _create_participant_membership(
+    session: AsyncSession, project_id: int, user_id: int
+) -> ProjectMember:
+    result = await session.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    if result.scalar_one_or_none() is not None:
+        raise ALREADY_MEMBER_ERROR
+
+    membership = ProjectMember(project_id=project_id, user_id=user_id, role=ProjectRole.PARTICIPANT)
+    session.add(membership)
+    await session.commit()
+    await session.refresh(membership)
+    return membership
+
+
+async def invite_member(session: AsyncSession, project_id: int, login: str) -> ProjectMember:
+    result = await session.execute(select(User).where(User.login == login))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise USER_NOT_FOUND_ERROR
+    return await _create_participant_membership(session, project_id, user.id)
+
+
+async def redeem_invite(session: AsyncSession, token: str, current_user: User) -> ProjectMember:
+    try:
+        payload = decode_invite_token(token)
+    except InvalidInviteTokenError as exc:
+        raise INVALID_INVITE_ERROR from exc
+
+    if payload["email"].lower() != current_user.email.lower():
+        raise WRONG_RECIPIENT_ERROR
+
+    return await _create_participant_membership(session, payload["project_id"], current_user.id)
+
+
+async def recalculate_project_size(session: AsyncSession, project_id: int) -> int:
+    project = await session.get(Project, project_id)
+    if project is None:
+        return 0
+
+    total = await storage.sum_object_sizes(f"projects/{project_id}/")
+    project.total_size_bytes = total
+    await session.commit()
+    return total

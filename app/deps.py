@@ -1,9 +1,10 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_session
 from app.models import Document, ProjectMember, ProjectRole, User
 from app.services.security import decode_access_token
@@ -87,3 +88,13 @@ async def require_document_access(
     if membership is None:
         raise DOCUMENT_NOT_FOUND_ERROR
     return document
+
+
+INVALID_INTERNAL_SECRET_ERROR = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="invalid internal secret",)
+
+
+async def require_internal_secret(x_internal_secret: str = Header(...)) -> None:
+    if x_internal_secret != get_settings().internal_api_secret:
+        raise INVALID_INTERNAL_SECRET_ERROR

@@ -5,13 +5,14 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.db import engine
-from app.routers import auth, documents, projects
-from app.services import storage
+from app.routers import auth, documents, internal, projects
+from app.services import lambda_deploy, storage
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await storage.ensure_bucket_exists()
+    await lambda_deploy.ensure_lambda_deployed()
     yield
 
 
@@ -19,6 +20,7 @@ app = FastAPI(title="project-hub", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(documents.router)
+app.include_router(internal.router)
 
 
 @app.get("/health")
