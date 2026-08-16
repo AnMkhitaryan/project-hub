@@ -10,7 +10,7 @@ from app.services.projects import (
     delete_project,
     get_project,
     list_projects_for_user,
-    update_project)
+    update_project,)
 
 router = APIRouter(tags=["projects"])
 

@@ -1,12 +1,24 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.db import engine
-from app.routers import auth, projects
+from app.routers import auth, documents, projects
+from app.services import storage
 
-app = FastAPI(title="project-hub")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await storage.ensure_bucket_exists()
+    yield
+
+
+app = FastAPI(title="project-hub", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(projects.router)
+app.include_router(documents.router)
 
 
 @app.get("/health")

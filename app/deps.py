@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.models import ProjectMember, ProjectRole, User
+from app.models import Document, ProjectMember, ProjectRole, User
 from app.services.security import decode_access_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -43,17 +43,22 @@ NOT_PROJECT_OWNER_ERROR = HTTPException(
     detail="only the project owner can do this",)
 
 
+async def _find_membership(
+    session: AsyncSession, project_id: int, user_id: int) -> ProjectMember | None:
+    result = await session.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def require_member(
     project_id: int,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),) -> ProjectMember:
-    result = await session.execute(
-        select(ProjectMember).where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.user_id == current_user.id,
-        )
-    )
-    membership = result.scalar_one_or_none()
+    membership = await _find_membership(session, project_id, current_user.id)
     if membership is None:
         raise PROJECT_NOT_FOUND_ERROR
     return membership
@@ -64,3 +69,21 @@ async def require_owner(
     if membership.role != ProjectRole.OWNER:
         raise NOT_PROJECT_OWNER_ERROR
     return membership
+
+
+DOCUMENT_NOT_FOUND_ERROR = HTTPException(
+    status_code=status.HTTP_404_NOT_FOUND,
+    detail="document not found",)
+
+
+async def require_document_access(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),) -> Document:
+    document = await session.get(Document, document_id)
+    if document is None:
+        raise DOCUMENT_NOT_FOUND_ERROR
+    membership = await _find_membership(session, document.project_id, current_user.id)
+    if membership is None:
+        raise DOCUMENT_NOT_FOUND_ERROR
+    return document
