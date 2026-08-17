@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from functools import lru_cache
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -11,7 +12,7 @@ _CHUNK_SIZE = 1024 * 1024
 
 
 @lru_cache
-def _client():
+def _client() -> Any:
     settings = get_settings()
     return boto3.client(
         "s3",

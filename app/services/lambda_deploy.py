@@ -3,6 +3,7 @@ import io
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -73,7 +74,7 @@ def _deploy_function_sync() -> str:
     return response["Configuration"]["FunctionArn"]
 
 
-def _wait_until_active(client) -> None:
+def _wait_until_active(client: Any) -> None:
     deadline = time.monotonic() + _ACTIVE_WAIT_TIMEOUT_SECONDS
     while True:
         response = client.get_function(FunctionName=FUNCTION_NAME)

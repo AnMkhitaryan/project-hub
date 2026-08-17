@@ -54,19 +54,27 @@ async def upload_documents(
         raise PROJECT_SIZE_LIMIT_ERROR
 
     documents = []
-    for file, body, content_type in zip(files, bodies, content_types, strict=True):
-        s3_key = f"projects/{project_id}/{uuid.uuid4().hex}"
-        await storage.upload(s3_key, body, content_type=content_type)
-        document = Document(
-            project_id=project_id,
-            filename=file.filename or "unnamed",
-            content_type=content_type,
-            size_bytes=len(body),
-            s3_key=s3_key,)
-        session.add(document)
-        documents.append(document)
+    uploaded_keys: list[str] = []
+    try:
+        for file, body, content_type in zip(files, bodies, content_types, strict=True):
+            s3_key = f"projects/{project_id}/{uuid.uuid4().hex}"
+            await storage.upload(s3_key, body, content_type=content_type)
+            uploaded_keys.append(s3_key)
+            document = Document(
+                project_id=project_id,
+                filename=file.filename or "unnamed",
+                content_type=content_type,
+                size_bytes=len(body),
+                s3_key=s3_key,)
+            session.add(document)
+            documents.append(document)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        if uploaded_keys:
+            await storage.delete_many(uploaded_keys)
+        raise
 
-    await session.commit()
     for document in documents:
         await session.refresh(document)
     return documents
@@ -96,10 +104,11 @@ async def replace_document_content(
 
 
 async def delete_document(session: AsyncSession, document: Document) -> None:
-    await storage.delete(document.s3_key)
+    s3_key = document.s3_key
     await _try_adjust_project_size(session, document.project_id, -document.size_bytes)
     await session.delete(document)
     await session.commit()
+    await storage.delete(s3_key)
 
 
 async def list_documents_for_project(session: AsyncSession, project_id: int) -> Sequence[Document]:

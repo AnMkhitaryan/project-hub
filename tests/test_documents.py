@@ -1,43 +1,19 @@
-import uuid
-
 import boto3
 import pytest
 from botocore.exceptions import ClientError
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.main import app
 from app.models import Document, Project
+from tests.conftest import register_and_login as _register_and_login
 
 
 def _s3_client():
     settings = get_settings()
     return boto3.client(
         "s3", region_name=settings.aws_region, endpoint_url=settings.aws_endpoint_url)
-
-
-@pytest.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-
-async def _register_and_login(client: AsyncClient) -> str:
-    login = f"user_{uuid.uuid4().hex[:12]}"
-    await client.post(
-        "/auth",
-        json={
-            "login": login,
-            "email": f"{login}@example.com",
-            "password": "supersecret1",
-            "repeat_password": "supersecret1",
-        },
-    )
-    response = await client.post("/login", json={"login": login, "password": "supersecret1"})
-    return response.json()["access_token"]
 
 
 async def _create_project(client: AsyncClient, token: str) -> int:
@@ -50,6 +26,9 @@ async def _create_project(client: AsyncClient, token: str) -> int:
 PDF_BYTES = b"%PDF-1.4\n%fake pdf content for testing\n"
 PDF_BYTES_V2 = b"%PDF-1.4\n%replaced pdf content, longer than the original\n"
 EXE_BYTES = b"MZ\x90\x00\x03\x00\x00\x00fake exe content"
+DOCX_BYTES = b"PK\x03\x04fake docx content for testing"
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+TEXT_BYTES = b"just plain text, not a real document"
 
 
 async def test_upload_document_returns_201_with_metadata(client: AsyncClient):
@@ -97,6 +76,42 @@ async def test_upload_rejects_exe_renamed_to_pdf(client: AsyncClient):
     response = await client.post(
         f"/project/{project_id}/documents",
         files={"files": ("totally_a.pdf", EXE_BYTES, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},)
+
+    assert response.status_code == 415
+
+
+async def test_upload_docx_document_returns_201_with_metadata(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+
+    response = await client.post(
+        f"/project/{project_id}/documents",
+        files={"files": (
+            "report.docx", DOCX_BYTES,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        headers={"Authorization": f"Bearer {token}"},)
+
+    assert response.status_code == 201
+    doc = response.json()[0]
+    assert doc["filename"] == "report.docx"
+    assert doc["content_type"] == DOCX_CONTENT_TYPE
+    assert doc["size_bytes"] == len(DOCX_BYTES)
+
+    async with SessionLocal() as session:
+        document = await session.get(Document, doc["id"])
+        s3_key = document.s3_key
+    head = _s3_client().head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
+    assert head["ContentLength"] == len(DOCX_BYTES)
+
+
+async def test_upload_rejects_plain_text_file(client: AsyncClient):
+    token = await _register_and_login(client)
+    project_id = await _create_project(client, token)
+
+    response = await client.post(
+        f"/project/{project_id}/documents",
+        files={"files": ("notes.pdf", TEXT_BYTES, "application/pdf")},
         headers={"Authorization": f"Bearer {token}"},)
 
     assert response.status_code == 415
@@ -294,7 +309,7 @@ async def test_delete_document_removes_db_row_and_s3_object(client: AsyncClient)
         _s3_client().head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
 
 
-async def test_delete_document_db_row_survives_failed_s3_delete(
+async def test_delete_document_row_removed_even_if_s3_delete_fails(
     client: AsyncClient, monkeypatch):
     token = await _register_and_login(client)
     project_id = await _create_project(client, token)
@@ -313,7 +328,7 @@ async def test_delete_document_db_row_survives_failed_s3_delete(
         await client.delete(f"/document/{doc_id}", headers={"Authorization": f"Bearer {token}"})
 
     async with SessionLocal() as session:
-        assert await session.get(Document, doc_id) is not None
+        assert await session.get(Document, doc_id) is None
 
 
 async def test_upload_updates_project_total_size_bytes(client: AsyncClient):

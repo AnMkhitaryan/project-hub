@@ -4,43 +4,21 @@ from datetime import timedelta
 import boto3
 import pytest
 from botocore.exceptions import ClientError
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import event, select
 
 from app.config import get_settings
 from app.db import SessionLocal
 from app.db import engine as db_engine
-from app.main import app
 from app.models import Document, Project, ProjectMember, ProjectRole
 from app.services.security import create_invite_token
+from tests.conftest import register_and_login as _register_and_login
 
 
 def _s3_client():
     settings = get_settings()
     return boto3.client(
         "s3", region_name=settings.aws_region, endpoint_url=settings.aws_endpoint_url)
-
-
-@pytest.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-
-async def _register_and_login(client: AsyncClient) -> str:
-    login = f"user_{uuid.uuid4().hex[:12]}"
-    await client.post(
-        "/auth",
-        json={
-            "login": login,
-            "email": f"{login}@example.com",
-            "password": "supersecret1",
-            "repeat_password": "supersecret1",
-        },
-    )
-    response = await client.post("/login", json={"login": login, "password": "supersecret1"})
-    return response.json()["access_token"]
 
 
 async def test_create_project_returns_201_with_body(client: AsyncClient):

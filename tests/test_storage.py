@@ -34,3 +34,33 @@ async def test_delete_removes_object():
 
     with pytest.raises(ClientError):
         _s3_client().head_object(Bucket=get_settings().s3_bucket, Key=s3_key)
+
+
+class _FakeBucketClient:
+    def __init__(self, error_code: str | None):
+        self.error_code = error_code
+        self.created = False
+
+    def head_bucket(self, Bucket):
+        if self.error_code is not None:
+            raise ClientError({"Error": {"Code": self.error_code}}, "HeadBucket")
+
+    def create_bucket(self, Bucket):
+        self.created = True
+
+
+async def test_ensure_bucket_exists_creates_bucket_when_missing(monkeypatch):
+    fake = _FakeBucketClient(error_code="404")
+    monkeypatch.setattr(storage, "_client", lambda: fake)
+
+    await storage.ensure_bucket_exists()
+
+    assert fake.created is True
+
+
+async def test_ensure_bucket_exists_reraises_unexpected_error(monkeypatch):
+    fake = _FakeBucketClient(error_code="AccessDenied")
+    monkeypatch.setattr(storage, "_client", lambda: fake)
+
+    with pytest.raises(ClientError):
+        await storage.ensure_bucket_exists()

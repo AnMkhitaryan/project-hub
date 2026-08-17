@@ -14,8 +14,7 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
 async def register(
-    payload: UserRegister, session: AsyncSession = Depends(get_session)
-) -> UserPublic:
+    payload: UserRegister, session: AsyncSession = Depends(get_session)) -> User:
     return await create_user(session, payload)
 
 
@@ -26,5 +25,5 @@ async def login(payload: UserLogin, session: AsyncSession = Depends(get_session)
 
 
 @router.get("/me", response_model=UserPublic)
-async def me(current_user: User = Depends(get_current_user)) -> UserPublic:
+async def me(current_user: User = Depends(get_current_user)) -> User:
     return current_user

@@ -24,7 +24,7 @@ router = APIRouter(tags=["projects"])
 async def create(
         payload: ProjectCreate,
         current_user: User = Depends(get_current_user),
-        session: AsyncSession = Depends(get_session), ) -> ProjectPublic:
+        session: AsyncSession = Depends(get_session), ) -> Project:
     return await create_project(session, payload, current_user)
 
 
@@ -39,7 +39,7 @@ async def list_projects(
 async def get_info(
         project_id: int,
         session: AsyncSession = Depends(get_session),
-        membership: ProjectMember = Depends(require_member),) -> ProjectPublic:
+        membership: ProjectMember = Depends(require_member),) -> Project:
     return await get_project(session, project_id)
 
 
@@ -48,7 +48,7 @@ async def update_info(
         project_id: int,
         payload: ProjectUpdate,
         session: AsyncSession = Depends(get_session),
-        membership: ProjectMember = Depends(require_member),) -> ProjectPublic:
+        membership: ProjectMember = Depends(require_member),) -> Project:
     project = await get_project(session, project_id)
     return await update_project(session, project, payload)
 

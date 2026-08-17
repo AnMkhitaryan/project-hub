@@ -65,7 +65,8 @@ async def list_projects_for_user(session: AsyncSession, user_id: int) -> Sequenc
 
 async def get_project(session: AsyncSession, project_id: int) -> Project:
     project = await session.get(Project, project_id)
-    assert project is not None
+    if project is None:
+        raise RuntimeError(f"project {project_id} vanished after membership check")
     return project
 
 
