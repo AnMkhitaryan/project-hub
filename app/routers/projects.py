@@ -14,7 +14,8 @@ from app.services.projects import (
     invite_member,
     list_projects_for_user,
     redeem_invite,
-    update_project,)
+    update_project,
+)
 from app.services.security import create_invite_token
 
 router = APIRouter(tags=["projects"])
